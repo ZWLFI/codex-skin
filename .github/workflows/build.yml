@@ -9,6 +9,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build universal app and run self-test
         run: ./package.sh
+      - name: Check presets and preview refresh
+        run: |
+          swiftc -parse-as-library -swift-version 5 -D LAUNCHER_TEST \
+            -framework AppKit -framework UniformTypeIdentifiers -framework SwiftUI \
+            CodexBackground.swift SkinPreferences.swift test-preferences.swift -o dist/test-preferences
+          ./dist/test-preferences
       - uses: actions/upload-artifact@v4
         with:
           name: codex-skin-universal

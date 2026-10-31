@@ -11,7 +11,7 @@
 - macOS 13+，Apple Silicon / Intel universal 安装包。
 - 需要支持 Chromium 本地调试接口的 Codex 桌面端。开发使用 Bundle ID 为 `com.openai.codex` 的 `ChatGPT.app`，并非所有 ChatGPT 原生客户端都适用。
 - 安装包为 ad-hoc 本地签名，**没有 Apple Developer ID 签名或公证**。确认来源后，如系统阻止启动，可通过“系统设置 → 隐私与安全性”允许该应用，或从源码构建；无需关闭系统安全设置。
-- 下载 ZIP 及同名 `.sha256` 文件，运行 `shasum -a 256 -c Codex-Skin-1.8.0-universal.zip.sha256` 校验。
+- 下载 ZIP 及同名 `.sha256` 文件，运行 `shasum -a 256 -c Codex-Skin-1.8.1-universal.zip.sha256` 校验。
 
 ## 一键启动与应用
 
@@ -63,13 +63,19 @@ swiftc -parse-as-library -swift-version 5 -D LAUNCHER_TEST \
   CodexBackground.swift SkinPreferences.swift test-launcher.swift -o dist/test-launcher
 ./dist/test-launcher
 
+# 预设与同路径图片预览更新，不写用户设置
+swiftc -parse-as-library -swift-version 5 -D LAUNCHER_TEST \
+  -framework AppKit -framework UniformTypeIdentifiers -framework SwiftUI \
+  CodexBackground.swift SkinPreferences.swift test-preferences.swift -o dist/test-preferences
+./dist/test-preferences
+
 # 使用 ChatGPT.app 附带的 Node / Playwright；布局测试还需 Google Chrome
 '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node' test-layout.cjs
 # 连接测试要求 9342 端口空闲，先退出 Skin 及占用端口的 Codex
 '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node' test-connection.cjs
 ```
 
-GitHub Actions 运行 universal 构建与内置自测。真实应用资源测试和 GUI 启动测试在本地运行。
+GitHub Actions 运行 universal 构建、内置自测、预设和预览更新测试。真实应用资源测试和 GUI 启动测试在本地运行。
 
 ## 排障与限制
 

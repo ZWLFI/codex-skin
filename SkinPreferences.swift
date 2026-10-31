@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 final class SkinPreferencesModel: ObservableObject {
     @Published var settings = BackgroundSettings.load() {
-        didSet { if settings.imagePath != oldValue.imagePath { loadPreview() } }
+        didSet { if settings.imagePath != oldValue.imagePath { reloadPreview() } }
     }
     @Published var image: NSImage?
     @Published var connected = false
@@ -16,9 +16,9 @@ final class SkinPreferencesModel: ObservableObject {
     var apply: () -> Void = {}
     var restart: () -> Void = {}
 
-    init() { loadPreview() }
+    init() { reloadPreview() }
 
-    private func loadPreview() {
+    func reloadPreview() {
         image = settings.imagePath.flatMap { NSImage(contentsOfFile: $0) }
     }
 

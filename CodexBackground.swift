@@ -751,6 +751,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settings.imagePath = try BackgroundStore.importImage(from: url).path
             settings.save()
             refreshPreferences()
+            // Imported images reuse the same destination filename.
+            preferences.reloadPreview()
             applyToCodex()
         } catch {
             showError(error.localizedDescription)
