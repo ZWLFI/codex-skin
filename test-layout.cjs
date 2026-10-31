@@ -1,0 +1,99 @@
+// Run with the Node bundled in ChatGPT.app. Uses the installed app's actual CSS.
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { chromium } = require('/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/playwright');
+
+async function main() {
+  const archive = fs.openSync('/Applications/ChatGPT.app/Contents/Resources/app.asar', 'r');
+  const prefix = Buffer.alloc(16);
+  fs.readSync(archive, prefix, 0, 16, 0);
+  const header = Buffer.alloc(prefix.readUInt32LE(12));
+  fs.readSync(archive, header, 0, header.length, 16);
+  const assets = JSON.parse(header).files.webview.files.assets.files;
+  // Releases may use either descriptive chunk names or content hashes.
+  const styles = Object.entries(assets).filter(([name]) => name.endsWith('.css')).sort(([a], [b]) => Number(!a.startsWith('app-shared')) - Number(!b.startsWith('app-shared'))).map(([, entry]) => {
+    const data = Buffer.alloc(entry.size);
+    fs.readSync(archive, data, 0, data.length, 8 + prefix.readUInt32LE(4) + Number(entry.offset));
+    return data.toString();
+  }).join('\n');
+  fs.closeSync(archive);
+  const workspace = styles.match(/\._WorkspaceContent_\w+/)?.[0].slice(1);
+  const surface = styles.match(/\._MainContentSurface_\w+/)?.[0].slice(1);
+  const fade = styles.match(/\._MainContentTopFade_\w+/)?.[0].slice(1);
+  assert(fade, 'Updated app top fade needs inspection');
+  assert(workspace && surface, 'Updated app layout needs inspection');
+  const binary = `${__dirname}/dist/Codex Skin.app/Contents/MacOS/CodexBackground`;
+  const script = execFileSync(binary, ['--print-injection-script'], { encoding: 'utf8' });
+  const clear = execFileSync(binary, ['--print-injection-script', '--clear'], { encoding: 'utf8' });
+  const probe = execFileSync(binary, ['--print-probe-script'], { encoding: 'utf8' });
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    assert.deepEqual(await page.evaluate(script), { ready: false }, 'An unmounted page is not a successful application');
+    await page.setContent(`<html data-codex-window-type="electron"><head></head><body><div id="root">
+      <div data-app-shell-frame data-app-shell-page-surface="true" data-app-shell-unified-tab-strip="true">
+        <aside class="app-shell-left-panel"><nav class="sidebar-navigation">Sidebar</nav></aside>
+        <header data-app-shell-main-titlebar>Title</header>
+        <main data-app-shell-main-surface="default" class="${surface}">
+          <div class="${fade}"></div>
+          <div class="${workspace}"><button id="click-test">Click</button></div>
+        </main>
+      </div></div></body></html>`);
+    await page.addStyleTag({ content: styles });
+    await page.addStyleTag({ content: ':root {--color-surface:rgb(255,255,255);--color-surface-secondary:rgb(240,240,240);--color-surface-tertiary:rgb(230,230,230)}' });
+    const pseudoBackground = () => page.locator(`.${workspace}`).evaluate(el => getComputedStyle(el, '::before').backgroundColor);
+    assert.notEqual(await pseudoBackground(), 'rgba(0, 0, 0, 0)', 'Reproduce the new opaque workspace layer');
+    await page.locator('main').evaluate(el => el.insertAdjacentHTML('beforeend', '<div class="thread-scroll-container"><div class="bg-gradient-to-t from-surface" id="bottom-fade"></div><div data-thread-scroll-footer="true"><div id="footer-backdrop" class="pointer-events-none absolute bg-surface"></div><div data-composer-layout="multiline" class="bg-surface">Input</div></div></div>'));
+    await page.addStyleTag({ content: '#bottom-fade{background-image:linear-gradient(to top,white,transparent)}#footer-backdrop,[data-composer-layout]{background-color:white}' });
+    await page.locator('.thread-scroll-container').evaluate(el => el.insertAdjacentHTML('beforeend', '<div id="new-bottom-fade" class="_background_updated_2 _fade_updated_2 pointer-events-none absolute from-surface" style="background-image:linear-gradient(to top,white,transparent)"></div>'));
+    for (const theme of ['light', 'dark']) {
+      await page.locator('html').evaluate((el, theme) => el.dataset.theme = theme, theme);
+      await page.evaluate(script);
+      assert.equal(await page.locator('#bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
+      assert.equal(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
+      assert.equal(await page.locator('#footer-backdrop').evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+      assert.equal(await page.locator('[data-composer-layout]').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(255, 255, 255)');
+      assert.equal(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), 'none');
+      assert.equal(await pseudoBackground(), 'rgba(0, 0, 0, 0)');
+      for (const selector of ['[data-app-shell-frame]', 'main', 'aside', 'nav', 'header']) {
+        assert.equal(await page.locator(selector).evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)', selector);
+      }
+      assert.equal(await page.locator('#codex-background-layer').evaluate(el => getComputedStyle(el).opacity), '0.42');
+      await page.evaluate(() => document.querySelector('#click-test').onclick = () => document.body.dataset.clicked = 'yes');
+      await page.locator('#click-test').click();
+      assert.equal(await page.locator('body').getAttribute('data-clicked'), 'yes');
+    }
+    await page.evaluate(script);
+    assert.equal(await page.locator('#codex-background-layer').count(), 1);
+    assert.deepEqual(await page.evaluate(probe), { active: true });
+    await page.locator('#codex-background-layer').evaluate(el => el.remove());
+    assert.deepEqual(await page.evaluate(probe), { ready: false });
+    await page.evaluate(script);
+    assert.equal(await page.locator('#codex-background-layer').count(), 1, 'Restore the layer after page remount');
+    await page.evaluate(clear);
+    assert.deepEqual(await page.evaluate(probe), { active: false });
+    assert.equal(await page.locator('#codex-background-layer').count(), 0);
+    assert.match(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Clear restores the native footer fade');
+    assert.notEqual(await pseudoBackground(), 'rgba(0, 0, 0, 0)', 'Clear restores app styling');
+    const frame = page.locator('[data-app-shell-frame]');
+    await frame.evaluate(el => {
+      el.innerHTML = '<nav data-app-navigation-rail><button>Menu</button></nav><header data-app-shell-titlebar>Title</header><div id="message">Message</div><div id="composer">Input</div>';
+    });
+    await page.addStyleTag({ content: '[data-app-shell-frame]{--thread-content-max-width:48rem}[data-app-navigation-rail]{width:52px}[data-app-shell-titlebar]{height:44px}#message,#composer{width:100%;max-width:var(--thread-content-max-width)}' });
+    const sizes = () => page.evaluate(() => ['[data-app-navigation-rail]', '[data-app-shell-titlebar]', '#message', '#composer'].map((s,i) => {const r=document.querySelector(s).getBoundingClientRect();return i===1?r.height:r.width}));
+    const originalSizes = await sizes();
+    const compact = execFileSync(binary, ['--print-injection-script', '--compact', '--clear'], { encoding: 'utf8' });
+    await page.evaluate(compact);
+    assert.deepEqual(await sizes(), [26,22,1152,1152]);
+    await page.evaluate(compact);
+    assert.deepEqual(await sizes(), [26,22,1152,1152], 'Reapply must not compound scaling');
+    await page.locator('[data-app-navigation-rail] button').click();
+    await page.evaluate(clear);
+    assert.deepEqual(await sizes(), originalSizes, '100% restores original layout');
+    console.log('layout test passed: actual app CSS, light/dark, opacity, clicks, reapply, clear');
+  } finally {
+    await browser.close();
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });
