@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UniformTypeIdentifiers
+import SwiftUI
 
 private let debugPort = 9342
 private let codexBundleIdentifier = "com.openai.codex"
@@ -41,6 +42,20 @@ struct BackgroundSettings {
     var topScale: Double = 1
     var contentScale: Double = 1
     var autoRestart: Bool = true
+    var hideRail: Bool = false
+    var hideTopBar: Bool = false
+
+    var hasCustomization: Bool {
+        imagePath != nil || hideRail || hideTopBar || railScale != 1 || topScale != 1 || contentScale != 1
+    }
+
+    mutating func resetLayout() {
+        hideRail = false
+        hideTopBar = false
+        railScale = 1
+        topScale = 1
+        contentScale = 1
+    }
 
     static func load(from defaults: UserDefaults = .standard) -> BackgroundSettings {
         let savedOpacity = defaults.object(forKey: "backgroundOpacity") as? NSNumber
@@ -51,7 +66,9 @@ struct BackgroundSettings {
             railScale: min(1, max(0.5, (defaults.object(forKey: "railScale") as? NSNumber)?.doubleValue ?? 1)),
             topScale: min(1, max(0.5, (defaults.object(forKey: "topScale") as? NSNumber)?.doubleValue ?? 1)),
             contentScale: min(2, max(1, (defaults.object(forKey: "contentScale") as? NSNumber)?.doubleValue ?? 1)),
-            autoRestart: defaults.object(forKey: "autoRestartCodex") == nil ? true : defaults.bool(forKey: "autoRestartCodex")
+            autoRestart: defaults.object(forKey: "autoRestartCodex") == nil ? true : defaults.bool(forKey: "autoRestartCodex"),
+            hideRail: defaults.bool(forKey: "hideRail"),
+            hideTopBar: defaults.bool(forKey: "hideTopBar")
         )
     }
 
@@ -63,6 +80,8 @@ struct BackgroundSettings {
         defaults.set(topScale, forKey: "topScale")
         defaults.set(contentScale, forKey: "contentScale")
         defaults.set(autoRestart, forKey: "autoRestartCodex")
+        defaults.set(hideRail, forKey: "hideRail")
+        defaults.set(hideTopBar, forKey: "hideTopBar")
     }
 }
 
@@ -340,6 +359,8 @@ final class CodexInjector {
             "railScale": settings.railScale,
             "topScale": settings.topScale,
             "contentScale": settings.contentScale,
+            "hideRail": settings.hideRail,
+            "hideTopBar": settings.hideTopBar,
             "size": layout.size,
             "repeatMode": layout.repeatMode,
             "position": layout.position
@@ -353,7 +374,7 @@ final class CodexInjector {
           }
           const cfg = \(json);
           let frameStyle = document.getElementById('codex-frame-style');
-          if (cfg.railScale === 1 && cfg.topScale === 1 && cfg.contentScale === 1) {
+          if (cfg.railScale === 1 && cfg.topScale === 1 && cfg.contentScale === 1 && !cfg.hideRail && !cfg.hideTopBar) {
             frameStyle?.remove();
             frameStyle = null;
           } else {
@@ -364,7 +385,7 @@ final class CodexInjector {
             }
             frameStyle.textContent = `
               [data-app-shell-frame] {
-                --app-shell-navigation-rail-width: ${52 * cfg.railScale}px !important;
+                --app-shell-navigation-rail-width: ${cfg.hideRail ? 0 : 52 * cfg.railScale}px !important;
                 --height-titlebar: ${44 * cfg.topScale}px !important;
                 --thread-content-max-width: ${48 * cfg.contentScale}rem !important;
               }
@@ -376,6 +397,25 @@ final class CodexInjector {
                 zoom: ${cfg.topScale};
                 height: 44px !important;
               }
+              ${cfg.hideRail ? `
+                [data-app-shell-frame] [data-app-navigation-rail] { display: none !important; }
+              ` : ''}
+              ${cfg.hideTopBar ? `
+                [data-app-shell-frame], [data-app-shell-frame] [class*="_Layout_"] {
+                  --height-titlebar: 0px !important;
+                  --app-shell-titlebar-height: 0px !important;
+                  --app-shell-titlebar-top-inset: 0px !important;
+                  --app-shell-page-header-offset: 0px !important;
+                  --app-shell-header-height: 0px !important;
+                  --app-shell-application-menu-height: 0px !important;
+                }
+                [data-app-shell-frame] [class*="_MainContentFrame_"] {
+                  --app-shell-main-content-frame-top-offset: 0px !important;
+                  --app-shell-main-toolbar-height: 0px !important;
+                }
+                [data-app-shell-frame] :is([data-app-shell-titlebar], [data-app-shell-main-titlebar],
+                  [data-app-shell-application-menu-bar], [data-app-shell-tab-row]) { display: none !important; }
+              ` : ''}
             `;
           }
           const styleId = 'codex-background-style';
@@ -523,10 +563,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var restoringSavedBackground = false
     private var recoveryGate = RecoveryGate()
     private var portMissing = false
+    private var preferencesWindow: NSWindow?
+    private let preferences = SkinPreferencesModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "photo.on.rectangle.angled", accessibilityDescription: "Codex Skin")
+        statusItem.button?.image = NSImage(systemSymbolName: "square.3.layers.3d", accessibilityDescription: "Codex Skin")
         statusItem.button?.toolTip = "Codex Skin"
         menu.delegate = self
         statusItem.menu = menu
@@ -535,10 +577,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.lastError = error
             self?.portMissing = portMissing
             self?.statusItem.button?.image = NSImage(
-                systemSymbolName: connected ? "photo.on.rectangle.angled" : "photo.badge.exclamationmark",
+                systemSymbolName: connected ? "square.3.layers.3d" : "exclamationmark.circle",
                 accessibilityDescription: connected ? "Codex Skin 已连接" : "Codex Skin 待应用"
             )
             self?.restoreSavedBackground()
+            self?.refreshPreferences()
+        }
+        preferences.onChange = { [weak self] settings in
+            settings.save()
+            self?.injector.scheduleApply()
+        }
+        preferences.chooseImage = { [weak self] in self?.chooseBackground() }
+        preferences.clearImage = { [weak self] in self?.clearBackground() }
+        preferences.apply = { [weak self] in self?.applyToCodex() }
+        preferences.restart = { [weak self] in self?.restartAndApply() }
+        if CommandLine.arguments.contains("--preview-settings") {
+            // Preview the native UI without connecting to or restarting Codex.
+            preferences.onChange = nil
+            preferences.apply = {}
+            preferences.restart = {}
+            preferences.chooseImage = {}
+            preferences.clearImage = {}
+            statusItem.menu = nil
+            if CommandLine.arguments.contains("--dark") { NSApplication.shared.appearance = NSAppearance(named: .darkAqua) }
+            showPreferences()
+            return
         }
         injector.start()
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -547,11 +610,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             name: NSWorkspace.didLaunchApplicationNotification,
             object: nil
         )
-        if BackgroundSettings.load().imagePath != nil { applyToCodex() }
+        if BackgroundSettings.load().hasCustomization { applyToCodex() }
+        showPreferences()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        restartAndApply()
+        if !CommandLine.arguments.contains("--preview-settings") { restartAndApply() }
+        showPreferences()
         return false
     }
 
@@ -569,8 +634,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settings = BackgroundSettings.load()
         guard settings.autoRestart, !restoringSavedBackground else { return }
         let pid = NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).first?.processIdentifier
-        guard let path = settings.imagePath,
-              FileManager.default.fileExists(atPath: path),
+        guard settings.hasCustomization,
+              settings.imagePath.map({ FileManager.default.fileExists(atPath: $0) }) ?? true,
               recoveryGate.shouldRecover(process: pid, portMissing: portMissing) else { return }
         restartAndApply()
     }
@@ -583,6 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         restoringSavedBackground = true
         lastError = nil
+        refreshPreferences()
         if let pid = NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).first?.processIdentifier {
             recoveryGate.attempted.insert(pid)
         }
@@ -596,19 +662,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 injector.waitAndApply { [weak self] success in
                     self?.restoringSavedBackground = false
                     if !success { self?.lastError = "等待主窗口超时，将继续重试注入；可从菜单手动应用" }
+                    self?.refreshPreferences()
                 }
             case let .failure(error):
                 restoringSavedBackground = false
                 lastError = error.localizedDescription
+                refreshPreferences()
             }
         }
     }
 
     func menuWillOpen(_ menu: NSMenu) { rebuildMenu() }
 
+    private func refreshPreferences() {
+        preferences.settings = BackgroundSettings.load()
+        preferences.connected = connected
+        preferences.busy = restoringSavedBackground
+        preferences.message = lastError
+    }
+
+    @objc private func showPreferences() {
+        refreshPreferences()
+        if preferencesWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = "Codex Skin"
+            window.titlebarAppearsTransparent = true
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: SkinPreferencesView(model: preferences))
+            window.center()
+            preferencesWindow = window
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        preferencesWindow?.makeKeyAndOrderFront(nil)
+    }
+
     private func rebuildMenu() {
         menu.removeAllItems()
         let settings = BackgroundSettings.load()
+        menu.addItem(item("Codex Skin 设置…", #selector(showPreferences), key: ","))
+        menu.addItem(.separator())
         let status = NSMenuItem(title: restoringSavedBackground ? "状态：正在启动并应用…" : connected ? "状态：已连接 Codex" : "状态：待应用", action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
@@ -624,30 +717,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             selected.isEnabled = false
             menu.addItem(selected)
         }
-        menu.addItem(opacityMenuItem(settings.opacity))
-
-        let layoutItem = NSMenuItem(title: "显示方式", action: nil, keyEquivalent: "")
-        let layoutMenu = NSMenu()
-        for layout in BackgroundLayout.allCases {
-            let option = item(layout.title, #selector(changeLayout(_:)))
-            option.representedObject = layout.rawValue
-            option.state = settings.layout == layout ? .on : .off
-            layoutMenu.addItem(option)
+        for (title, tag, hidden) in [("隐藏最左侧导航栏", 1, settings.hideRail), ("隐藏顶部栏", 2, settings.hideTopBar)] {
+            let toggle = item(title, #selector(toggleBar(_:)))
+            toggle.tag = tag
+            toggle.state = hidden ? .on : .off
+            menu.addItem(toggle)
         }
-        layoutItem.submenu = layoutMenu
-        menu.addItem(layoutItem)
-        menu.addItem(scaleMenuItem("左侧菜单栏宽度", settings.railScale, tag: 1, min: 0.5, max: 1))
-        menu.addItem(scaleMenuItem("顶部菜单栏高度", settings.topScale, tag: 2, min: 0.5, max: 1))
-        menu.addItem(scaleMenuItem("对话和输入框宽度", settings.contentScale, tag: 3, min: 1, max: 2))
+        menu.addItem(item("恢复栏位与默认尺寸", #selector(resetLayout)))
         menu.addItem(.separator())
         menu.addItem(item(connected ? "立即重新应用" : "应用到 Codex…", #selector(applyToCodex), key: "r"))
         let launch = item("启动 / 重启 Codex 并应用皮肤", #selector(restartAndApply))
         launch.isEnabled = !restoringSavedBackground
         menu.addItem(launch)
         menu.addItem(item("恢复 Codex 默认背景", #selector(clearBackground)))
-        let restart = item("允许自动重启 Codex 恢复连接", #selector(toggleAutoRestart))
-        restart.state = settings.autoRestart ? .on : .off
-        menu.addItem(restart)
         menu.addItem(.separator())
         menu.addItem(item("退出", #selector(quit), key: "q"))
     }
@@ -655,38 +737,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
-        return item
-    }
-
-    private func opacityMenuItem(_ opacity: Double) -> NSMenuItem {
-        let item = NSMenuItem()
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 245, height: 48))
-        let label = NSTextField(labelWithString: "背景透明度")
-        label.frame = NSRect(x: 14, y: 27, width: 120, height: 17)
-        let value = NSTextField(labelWithString: "\(Int((opacity * 100).rounded()))%")
-        value.alignment = .right
-        value.frame = NSRect(x: 182, y: 27, width: 48, height: 17)
-        let slider = NSSlider(value: opacity, minValue: 0.05, maxValue: 1, target: self, action: #selector(changeOpacity(_:)))
-        slider.isContinuous = true
-        slider.frame = NSRect(x: 12, y: 3, width: 220, height: 24)
-        view.addSubview(label)
-        view.addSubview(value)
-        view.addSubview(slider)
-        item.view = view
-        return item
-    }
-
-    private func scaleMenuItem(_ title: String, _ scale: Double, tag: Int, min: Double, max: Double) -> NSMenuItem {
-        let item = opacityMenuItem(scale)
-        guard let view = item.view else { return item }
-        (view.subviews.first as? NSTextField)?.stringValue = title
-        (view.subviews.first as? NSTextField)?.frame.size.width = 170
-        let slider = view.subviews.compactMap { $0 as? NSSlider }.first!
-        slider.minValue = min
-        slider.maxValue = max
-        slider.doubleValue = scale
-        slider.tag = tag
-        slider.action = #selector(changeScale(_:))
         return item
     }
 
@@ -700,52 +750,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var settings = BackgroundSettings.load()
             settings.imagePath = try BackgroundStore.importImage(from: url).path
             settings.save()
+            refreshPreferences()
             applyToCodex()
         } catch {
             showError(error.localizedDescription)
         }
     }
 
-    @objc private func changeOpacity(_ sender: NSSlider) {
-        var settings = BackgroundSettings.load()
-        settings.opacity = sender.doubleValue
-        settings.save()
-        (sender.superview?.subviews[1] as? NSTextField)?.stringValue = "\(Int((sender.doubleValue * 100).rounded()))%"
-        injector.scheduleApply()
-    }
-
-    @objc private func changeLayout(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let layout = BackgroundLayout(rawValue: raw) else { return }
-        var settings = BackgroundSettings.load()
-        settings.layout = layout
-        settings.save()
-        injector.applyNow()
-    }
-
     @objc private func clearBackground() {
         var settings = BackgroundSettings.load()
         settings.imagePath = nil
         settings.save()
+        refreshPreferences()
         injector.applyNow()
     }
 
-    @objc private func changeScale(_ sender: NSSlider) {
+    @objc private func toggleBar(_ sender: NSMenuItem) {
         var settings = BackgroundSettings.load()
-        let scale = (sender.doubleValue * 100).rounded() / 100
-        switch sender.tag {
-        case 1: settings.railScale = scale
-        case 2: settings.topScale = scale
-        default: settings.contentScale = scale
-        }
-        (sender.superview?.subviews[1] as? NSTextField)?.stringValue = "\(Int(scale * 100))%"
+        if sender.tag == 1 { settings.hideRail.toggle() } else { settings.hideTopBar.toggle() }
         settings.save()
-        injector.scheduleApply()
+        refreshPreferences()
+        injector.applyNow()
     }
 
-    @objc private func toggleAutoRestart() {
+    @objc private func resetLayout() {
         var settings = BackgroundSettings.load()
-        settings.autoRestart.toggle()
+        settings.resetLayout()
         settings.save()
+        refreshPreferences()
+        injector.applyNow()
     }
 
     @objc private func applyToCodex() {
@@ -799,7 +832,9 @@ struct CodexBackgroundApp {
                 settings: BackgroundSettings(imagePath: nil, opacity: 0.42, layout: .fit,
                     railScale: CommandLine.arguments.contains("--compact") ? 0.5 : 1,
                     topScale: CommandLine.arguments.contains("--compact") ? 0.5 : 1,
-                    contentScale: CommandLine.arguments.contains("--compact") ? 1.5 : 1),
+                    contentScale: CommandLine.arguments.contains("--compact") ? 1.5 : 1,
+                    hideRail: CommandLine.arguments.contains("--hide-rail"),
+                    hideTopBar: CommandLine.arguments.contains("--hide-top")),
                 imageDataURL: CommandLine.arguments.contains("--clear") ? nil : "data:image/png;base64,AA=="
             ))
             return
@@ -841,6 +876,8 @@ struct CodexBackgroundApp {
             let suiteName = "com.local.codex-background.self-test"
             let defaults = UserDefaults(suiteName: suiteName)!
             defaults.removePersistentDomain(forName: suiteName)
+            precondition(!BackgroundSettings.load(from: defaults).hideRail)
+            precondition(!BackgroundSettings.load(from: defaults).hideTopBar)
             let persisted = BackgroundSettings(imagePath: "/tmp/background.png", opacity: 0.42, layout: .tile, railScale: 0.5, topScale: 0.6, contentScale: 1.5)
             persisted.save(to: defaults)
             let restored = BackgroundSettings.load(from: defaults)
@@ -853,6 +890,14 @@ struct CodexBackgroundApp {
             enabled.autoRestart = false
             enabled.save(to: defaults)
             precondition(!BackgroundSettings.load(from: defaults).autoRestart)
+            enabled.hideRail = true
+            enabled.hideTopBar = true
+            enabled.imagePath = nil
+            enabled.save(to: defaults)
+            var hidden = BackgroundSettings.load(from: defaults)
+            precondition(hidden.hideRail && hidden.hideTopBar && hidden.hasCustomization)
+            hidden.resetLayout()
+            precondition(!hidden.hasCustomization && hidden.opacity == 0.42 && hidden.layout == .tile)
             defaults.removePersistentDomain(forName: suiteName)
             print("self-test passed")
             return

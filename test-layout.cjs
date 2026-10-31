@@ -10,17 +10,24 @@ async function main() {
   fs.readSync(archive, prefix, 0, 16, 0);
   const header = Buffer.alloc(prefix.readUInt32LE(12));
   fs.readSync(archive, header, 0, header.length, 16);
-  const assets = JSON.parse(header).files.webview.files.assets.files;
-  // Releases may use either descriptive chunk names or content hashes.
-  const styles = Object.entries(assets).filter(([name]) => name.endsWith('.css')).sort(([a], [b]) => Number(!a.startsWith('app-shared')) - Number(!b.startsWith('app-shared'))).map(([, entry]) => {
+  const webview = JSON.parse(header).files.webview.files;
+  const assets = webview.assets.files;
+  const readEntry = entry => {
     const data = Buffer.alloc(entry.size);
     fs.readSync(archive, data, 0, data.length, 8 + prefix.readUInt32LE(4) + Number(entry.offset));
     return data.toString();
-  }).join('\n');
+  };
+  // The document establishes layer precedence before any lazy CSS chunk loads.
+  const layerOrder = readEntry(webview['index.html']).match(/@layer[^;]+;/)?.[0];
+  assert(layerOrder, 'Updated app cascade order needs inspection');
+  // Releases may use either descriptive chunk names or content hashes.
+  const styles = layerOrder + '\n' + Object.entries(assets).filter(([name]) => name.endsWith('.css')).map(([, entry]) => readEntry(entry)).join('\n');
   fs.closeSync(archive);
   const workspace = styles.match(/\._WorkspaceContent_\w+/)?.[0].slice(1);
   const surface = styles.match(/\._MainContentSurface_\w+/)?.[0].slice(1);
   const fade = styles.match(/\._MainContentTopFade_\w+/)?.[0].slice(1);
+  const layoutClass = styles.match(/\._Layout_\w+(?=\{--app-shell-titlebar-height)/)?.[0].slice(1);
+  const contentFrame = styles.match(/\._MainContentFrame_\w+/)?.[0].slice(1);
   assert(fade, 'Updated app top fade needs inspection');
   assert(workspace && surface, 'Updated app layout needs inspection');
   const binary = `${__dirname}/dist/Codex Skin.app/Contents/MacOS/CodexBackground`;
@@ -91,6 +98,33 @@ async function main() {
     await page.locator('[data-app-navigation-rail] button').click();
     await page.evaluate(clear);
     assert.deepEqual(await sizes(), originalSizes, '100% restores original layout');
+    // The reserved space must collapse too, including with no background selected.
+    await frame.evaluate(el => el.insertAdjacentHTML('beforeend', '<aside id="threads">Threads</aside><div data-app-shell-main-titlebar>Header</div><div data-app-shell-tab-row>Tabs</div><button id="restore-test">Content action</button><div id="reserved-space"></div>'));
+    await page.addStyleTag({ content: '[data-app-shell-frame]{--app-shell-navigation-rail-width:52px;--height-titlebar:44px;--app-shell-titlebar-height:var(--height-titlebar)}#reserved-space{margin-left:var(--app-shell-navigation-rail-width);margin-top:var(--app-shell-titlebar-height)}' });
+    assert(layoutClass && contentFrame);
+    await frame.evaluate((el, { layoutClass, contentFrame, workspace }) => el.insertAdjacentHTML('beforeend', `<div class="${layoutClass}" data-app-shell-application-menu-header style="--sidebar-navigation-header-height:52px;--app-shell-main-content-frame-top-offset:44px"><div id="hidden-header-gap" class="${workspace}"></div><div id="hidden-frame-gap" class="${contentFrame}"></div></div>`), { layoutClass, contentFrame, workspace });
+    for (const args of [['--hide-rail'], ['--hide-top'], ['--hide-rail', '--hide-top']]) {
+      const hidden = execFileSync(binary, ['--print-injection-script', '--clear', ...args], { encoding: 'utf8' });
+      await page.evaluate(hidden);
+      const hideRail = args.includes('--hide-rail'), hideTop = args.includes('--hide-top');
+      assert.equal(await page.locator('[data-app-navigation-rail]').isVisible(), !hideRail);
+      for (const s of ['[data-app-shell-titlebar]', '[data-app-shell-main-titlebar]', '[data-app-shell-tab-row]']) {
+        assert.equal(await page.locator(s).isVisible(), !hideTop, s);
+      }
+      assert.equal(await page.locator('#threads').isVisible(), true, 'Keep the conversation list');
+      assert.deepEqual(await page.locator('#reserved-space').evaluate(el => [getComputedStyle(el).marginLeft, getComputedStyle(el).marginTop]), [hideRail ? '0px' : '52px', hideTop ? '0px' : '44px']);
+      assert.equal(await page.locator('#hidden-header-gap').evaluate(el => getComputedStyle(el).paddingTop), hideTop ? '0px' : '52px');
+      assert.equal(await page.locator('#hidden-frame-gap').evaluate(el => getComputedStyle(el).marginTop), hideTop ? '0px' : '44px');
+      await page.locator('#restore-test').click();
+      await page.evaluate(hidden);
+      assert.deepEqual(await page.evaluate(probe), { active: false });
+    }
+    await page.evaluate(clear);
+    assert.deepEqual(await sizes(), originalSizes, 'Restore hidden bars and previous dimensions');
+    assert.equal(await page.locator('[data-app-shell-tab-row]').isVisible(), true);
+    assert.equal(await page.locator('#hidden-header-gap').evaluate(el => getComputedStyle(el).paddingTop), '52px');
+    assert.equal(await page.locator('#hidden-frame-gap').evaluate(el => getComputedStyle(el).marginTop), '44px');
+    assert.deepEqual(await page.locator('#reserved-space').evaluate(el => [getComputedStyle(el).marginLeft, getComputedStyle(el).marginTop]), ['52px', '44px']);
     console.log('layout test passed: actual app CSS, light/dark, opacity, clicks, reapply, clear');
   } finally {
     await browser.close();

@@ -8,8 +8,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 for arch in arm64 x86_64; do
   /usr/bin/swiftc -parse-as-library -swift-version 5 -O \
     -target "$arch-apple-macos13.0" \
-    -framework AppKit -framework UniformTypeIdentifiers \
-    "$project_dir/CodexBackground.swift" \
+    -framework AppKit -framework UniformTypeIdentifiers -framework SwiftUI \
+    "$project_dir/CodexBackground.swift" "$project_dir/SkinPreferences.swift" \
     -o "$project_dir/dist/CodexBackground-$arch"
 done
 /usr/bin/lipo -create "$project_dir/dist/CodexBackground-arm64" \
