@@ -401,7 +401,7 @@ final class CodexInjector {
                 [data-app-shell-frame] [data-app-navigation-rail] { display: none !important; }
               ` : ''}
               ${cfg.hideTopBar ? `
-                [data-app-shell-frame], [data-app-shell-frame] [class*="_Layout_"] {
+                [data-app-shell-frame], [data-app-shell-frame] :is([class*="_Layout_"], [class^="Layout-"], [class*=" Layout-"]) {
                   --height-titlebar: 0px !important;
                   --app-shell-titlebar-height: 0px !important;
                   --app-shell-titlebar-top-inset: 0px !important;
@@ -409,7 +409,7 @@ final class CodexInjector {
                   --app-shell-header-height: 0px !important;
                   --app-shell-application-menu-height: 0px !important;
                 }
-                [data-app-shell-frame] [class*="_MainContentFrame_"] {
+                [data-app-shell-frame] :is([class*="_MainContentFrame_"], [class^="MainContentFrame-"], [class*=" MainContentFrame-"]) {
                   --app-shell-main-content-frame-top-offset: 0px !important;
                   --app-shell-main-toolbar-height: 0px !important;
                 }
@@ -461,17 +461,20 @@ final class CodexInjector {
             html[data-codex-background="active"] main,
             html[data-codex-background="active"] [role="main"],
             html[data-codex-background="active"] .thread-scroll-container,
-            html[data-codex-background="active"] header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*="_Header_"]) { background: transparent !important; }
+            html[data-codex-background="active"] header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*="_Header_"], [class^="Header-"], [class*=" Header-"]) { background: transparent !important; }
             html[data-codex-background="active"] .thread-scroll-container
               [class~="bg-gradient-to-t"][class~="from-surface"],
             html[data-codex-background="active"] .thread-scroll-container
               [class*="_background_"][class*="_fade_"][class~="pointer-events-none"][class~="from-surface"],
+            html[data-codex-background="active"] .thread-scroll-container
+              :is([class^="background-"], [class*=" background-"])[aria-hidden="true"][class~="pointer-events-none"][class~="absolute"]:is([class~="from-surface"], [class~="bg-surface"]),
             html[data-codex-background="active"] .thread-scroll-container [data-thread-scroll-footer],
             html[data-codex-background="active"] .thread-scroll-container [data-thread-scroll-footer]
               > [class~="pointer-events-none"][class~="absolute"][class~="bg-surface"] { background: none !important; }
             html[data-codex-background="active"] [data-app-shell-main-content-top-fade],
-            html[data-codex-background="active"] [class*="_MainContentTopFade_"] { background: none !important; }
-            html[data-codex-background="active"] [data-app-shell-main-surface] [class*="_WorkspaceContent_"]::before,
+            html[data-codex-background="active"] [class*="_MainContentTopFade_"],
+            html[data-codex-background="active"] [data-app-shell-frame] :is([class^="MainContentTopFade-"], [class*=" MainContentTopFade-"]) { background: none !important; }
+            html[data-codex-background="active"] [data-app-shell-main-surface] :is([class*="_WorkspaceContent_"], [class^="WorkspaceContent-"], [class*=" WorkspaceContent-"])::before,
             html[data-codex-background="active"] [data-app-shell-page-header][data-sticky]::before {
               background: none !important;
             }

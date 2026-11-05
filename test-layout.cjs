@@ -12,6 +12,12 @@ async function main() {
   fs.readSync(archive, header, 0, header.length, 16);
   const webview = JSON.parse(header).files.webview.files;
   const assets = webview.assets.files;
+  const entries = function* (files) {
+    for (const [name, entry] of Object.entries(files)) {
+      if (entry.files) yield* entries(entry.files);
+      else yield [name, entry];
+    }
+  };
   const readEntry = entry => {
     const data = Buffer.alloc(entry.size);
     fs.readSync(archive, data, 0, data.length, 8 + prefix.readUInt32LE(4) + Number(entry.offset));
@@ -21,16 +27,21 @@ async function main() {
   const layerOrder = readEntry(webview['index.html']).match(/@layer[^;]+;/)?.[0];
   assert(layerOrder, 'Updated app cascade order needs inspection');
   // Releases may use either descriptive chunk names or content hashes.
-  const styles = layerOrder + '\n' + Object.entries(assets).filter(([name]) => name.endsWith('.css')).map(([, entry]) => readEntry(entry)).join('\n');
+  const styles = layerOrder + '\n' + [...new Set([...entries(assets)].filter(([name]) => name.endsWith('.css')).map(([, entry]) => readEntry(entry)))].join('\n');
   fs.closeSync(archive);
-  const workspace = styles.match(/\._WorkspaceContent_\w+/)?.[0].slice(1);
-  const surface = styles.match(/\._MainContentSurface_\w+/)?.[0].slice(1);
-  const fade = styles.match(/\._MainContentTopFade_\w+/)?.[0].slice(1);
-  const layoutClass = styles.match(/\._Layout_\w+(?=\{--app-shell-titlebar-height)/)?.[0].slice(1);
-  const contentFrame = styles.match(/\._MainContentFrame_\w+/)?.[0].slice(1);
+  const componentClass = name => styles.match(new RegExp(`\\.(?:_${name}_\\w+|${name}-[\\w-]+)`))?.[0].slice(1);
+  const workspace = componentClass('WorkspaceContent');
+  const surface = componentClass('MainContentSurface');
+  const fade = componentClass('MainContentTopFade');
+  const layoutClass = styles.match(/\.(?:_Layout_\w+|Layout-[\w-]+)(?=\{--app-shell-titlebar-height)/)?.[0].slice(1);
+  const contentFrame = componentClass('MainContentFrame');
+  const topBackground = styles.match(/\.(background-[\w-]+),\.floatingHeader-[^{]+\{background-image:linear-gradient/)?.[1];
+  const footerBackground = styles.match(/\.(background-[\w-]+)\{top:calc/)?.[1];
+  const footerFade = styles.match(/\.(fade-[\w-]+)\{height:[^}]+--tw-gradient-position:to top/)?.[1];
+  assert(topBackground && footerBackground && footerFade, 'Updated gradient components need inspection');
   assert(fade, 'Updated app top fade needs inspection');
   assert(workspace && surface, 'Updated app layout needs inspection');
-  const binary = `${__dirname}/dist/Codex Skin.app/Contents/MacOS/CodexBackground`;
+  const binary = process.env.CODEX_SKIN_TEST_BINARY || `${__dirname}/dist/Codex Skin.app/Contents/MacOS/CodexBackground`;
   const script = execFileSync(binary, ['--print-injection-script'], { encoding: 'utf8' });
   const clear = execFileSync(binary, ['--print-injection-script', '--clear'], { encoding: 'utf8' });
   const probe = execFileSync(binary, ['--print-probe-script'], { encoding: 'utf8' });
@@ -43,22 +54,26 @@ async function main() {
         <aside class="app-shell-left-panel"><nav class="sidebar-navigation">Sidebar</nav></aside>
         <header data-app-shell-main-titlebar>Title</header>
         <main data-app-shell-main-surface="default" class="${surface}">
-          <div class="${fade}"></div>
+          <div class="${fade} ${topBackground}"></div>
           <div class="${workspace}"><button id="click-test">Click</button></div>
         </main>
       </div></div></body></html>`);
     await page.addStyleTag({ content: styles });
     await page.addStyleTag({ content: ':root {--color-surface:rgb(255,255,255);--color-surface-secondary:rgb(240,240,240);--color-surface-tertiary:rgb(230,230,230)}' });
+    assert.match(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Reproduce the actual top fade');
     const pseudoBackground = () => page.locator(`.${workspace}`).evaluate(el => getComputedStyle(el, '::before').backgroundColor);
     assert.notEqual(await pseudoBackground(), 'rgba(0, 0, 0, 0)', 'Reproduce the new opaque workspace layer');
     await page.locator('main').evaluate(el => el.insertAdjacentHTML('beforeend', '<div class="thread-scroll-container"><div class="bg-gradient-to-t from-surface" id="bottom-fade"></div><div data-thread-scroll-footer="true"><div id="footer-backdrop" class="pointer-events-none absolute bg-surface"></div><div data-composer-layout="multiline" class="bg-surface">Input</div></div></div>'));
     await page.addStyleTag({ content: '#bottom-fade{background-image:linear-gradient(to top,white,transparent)}#footer-backdrop,[data-composer-layout]{background-color:white}' });
     await page.locator('.thread-scroll-container').evaluate(el => el.insertAdjacentHTML('beforeend', '<div id="new-bottom-fade" class="_background_updated_2 _fade_updated_2 pointer-events-none absolute from-surface" style="background-image:linear-gradient(to top,white,transparent)"></div>'));
+    await page.locator('.thread-scroll-container').evaluate((el, { footerBackground, footerFade }) => el.insertAdjacentHTML('beforeend', `<div id="current-bottom-fade" aria-hidden="true" class="${footerBackground} ${footerFade} pointer-events-none absolute from-surface" style="--tw-gradient-stops: white, transparent"></div>`), { footerBackground, footerFade });
+    assert.match(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Reproduce the actual footer fade');
     for (const theme of ['light', 'dark']) {
       await page.locator('html').evaluate((el, theme) => el.dataset.theme = theme, theme);
       await page.evaluate(script);
       assert.equal(await page.locator('#bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
       assert.equal(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
+      assert.equal(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
       assert.equal(await page.locator('#footer-backdrop').evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
       assert.equal(await page.locator('[data-composer-layout]').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(255, 255, 255)');
       assert.equal(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), 'none');
@@ -82,6 +97,8 @@ async function main() {
     assert.deepEqual(await page.evaluate(probe), { active: false });
     assert.equal(await page.locator('#codex-background-layer').count(), 0);
     assert.match(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Clear restores the native footer fade');
+    assert.match(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
+    assert.match(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
     assert.notEqual(await pseudoBackground(), 'rgba(0, 0, 0, 0)', 'Clear restores app styling');
     const frame = page.locator('[data-app-shell-frame]');
     await frame.evaluate(el => {

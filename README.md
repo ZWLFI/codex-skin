@@ -11,7 +11,7 @@
 - macOS 13+，Apple Silicon / Intel universal 安装包。
 - 需要支持 Chromium 本地调试接口的 Codex 桌面端。开发使用 Bundle ID 为 `com.openai.codex` 的 `ChatGPT.app`，并非所有 ChatGPT 原生客户端都适用。
 - 安装包为 ad-hoc 本地签名，**没有 Apple Developer ID 签名或公证**。确认来源后，如系统阻止启动，可通过“系统设置 → 隐私与安全性”允许该应用，或从源码构建；无需关闭系统安全设置。
-- 下载 ZIP 及同名 `.sha256` 文件，运行 `shasum -a 256 -c Codex-Skin-1.8.1-universal.zip.sha256` 校验。
+- 下载 ZIP 及同名 `.sha256` 文件，运行 `shasum -a 256 -c Codex-Skin-1.8.2-universal.zip.sha256` 校验。
 
 ## 一键启动与应用
 
