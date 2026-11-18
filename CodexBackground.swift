@@ -471,6 +471,12 @@ final class CodexInjector {
             html[data-codex-background="active"] .thread-scroll-container [data-thread-scroll-footer],
             html[data-codex-background="active"] .thread-scroll-container [data-thread-scroll-footer]
               > [class~="pointer-events-none"][class~="absolute"][class~="bg-surface"] { background: none !important; }
+            html[data-codex-background="active"] [data-app-shell-frame]
+              .pointer-events-none:has(> [data-thread-scroll-footer] [data-thread-composer-backdrop] [data-composer-body])::before,
+            html[data-codex-background="active"] [data-app-shell-frame]
+              .pointer-events-none:has(> [data-thread-scroll-footer] [data-thread-composer-backdrop] [data-composer-body])::after {
+              background: none !important;
+            }
             html[data-codex-background="active"] [data-app-shell-main-content-top-fade],
             html[data-codex-background="active"] [class*="_MainContentTopFade_"],
             html[data-codex-background="active"] [data-app-shell-frame] :is([class^="MainContentTopFade-"], [class*=" MainContentTopFade-"]) { background: none !important; }

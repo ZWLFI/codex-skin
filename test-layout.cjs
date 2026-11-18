@@ -38,7 +38,9 @@ async function main() {
   const topBackground = styles.match(/\.(background-[\w-]+),\.floatingHeader-[^{]+\{background-image:linear-gradient/)?.[1];
   const footerBackground = styles.match(/\.(background-[\w-]+)\{top:calc/)?.[1];
   const footerFade = styles.match(/\.(fade-[\w-]+)\{height:[^}]+--tw-gradient-position:to top/)?.[1];
+  const composerFooter = styles.match(/\.(footer-[\w-]+):has\(\[data-thread-composer-backdrop\] \[data-composer-body\]\):before\{background:linear-gradient/)?.[1];
   assert(topBackground && footerBackground && footerFade, 'Updated gradient components need inspection');
+  assert(composerFooter, 'Updated composer footer needs inspection');
   assert(fade, 'Updated app top fade needs inspection');
   assert(workspace && surface, 'Updated app layout needs inspection');
   const binary = process.env.CODEX_SKIN_TEST_BINARY || `${__dirname}/dist/Codex Skin.app/Contents/MacOS/CodexBackground`;
@@ -68,9 +70,31 @@ async function main() {
     await page.locator('.thread-scroll-container').evaluate(el => el.insertAdjacentHTML('beforeend', '<div id="new-bottom-fade" class="_background_updated_2 _fade_updated_2 pointer-events-none absolute from-surface" style="background-image:linear-gradient(to top,white,transparent)"></div>'));
     await page.locator('.thread-scroll-container').evaluate((el, { footerBackground, footerFade }) => el.insertAdjacentHTML('beforeend', `<div id="current-bottom-fade" aria-hidden="true" class="${footerBackground} ${footerFade} pointer-events-none absolute from-surface" style="--tw-gradient-stops: white, transparent"></div>`), { footerBackground, footerFade });
     assert.match(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Reproduce the actual footer fade');
+    // The composer wrapper lives inside the transcript or beside it in compact mode.
+    for (const [selector, mode] of [['.thread-scroll-container', 'default'], ['main', 'compact']]) {
+      await page.locator(selector).evaluate((el, { composerFooter, mode }) => el.insertAdjacentHTML('beforeend', `
+        <div class="${composerFooter} pointer-events-none absolute" data-test-footer="${mode}">
+          <div data-thread-scroll-footer="true">
+            <div data-thread-composer-backdrop="true" class="pointer-events-auto">
+              <div data-composer-body><input aria-label="${mode} composer" style="background:white"></div>
+            </div>
+          </div>
+        </div>`), { composerFooter, mode });
+    }
+    await page.addStyleTag({ content: '[data-test-footer]{inset-inline:0;height:64px;padding-inline:36px}[data-test-footer="default"]{top:64px}[data-test-footer="compact"]{top:168px}' });
+    const composerBackdrop = async () => page.locator('[data-test-footer]').evaluateAll(footers => footers.map(footer => ({
+      gradient: getComputedStyle(footer, '::before').backgroundImage,
+      fill: getComputedStyle(footer, '::after').backgroundColor,
+    })));
+    const nativeBackdrop = await composerBackdrop();
+    for (const { gradient, fill } of nativeBackdrop) {
+      assert.match(gradient, /linear-gradient/, 'Reproduce the composer wrapper gradient');
+      assert.equal(fill, 'rgb(255, 255, 255)', 'Reproduce the white fill under the composer');
+    }
     for (const theme of ['light', 'dark']) {
       await page.locator('html').evaluate((el, theme) => el.dataset.theme = theme, theme);
       await page.evaluate(script);
+      assert.deepEqual(await composerBackdrop(), Array(2).fill({ gradient: 'none', fill: 'rgba(0, 0, 0, 0)' }));
       assert.equal(await page.locator('#bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
       assert.equal(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
       assert.equal(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
@@ -86,6 +110,13 @@ async function main() {
       await page.locator('#click-test').click();
       assert.equal(await page.locator('body').getAttribute('data-clicked'), 'yes');
     }
+    for (const mode of ['default', 'compact']) {
+      const input = page.getByRole('textbox', { name: `${mode} composer` });
+      assert.equal(await input.evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(255, 255, 255)');
+      await input.click();
+      await input.pressSequentially('Test');
+      assert.equal(await input.inputValue(), 'Test');
+    }
     await page.evaluate(script);
     assert.equal(await page.locator('#codex-background-layer').count(), 1);
     assert.deepEqual(await page.evaluate(probe), { active: true });
@@ -96,6 +127,7 @@ async function main() {
     await page.evaluate(clear);
     assert.deepEqual(await page.evaluate(probe), { active: false });
     assert.equal(await page.locator('#codex-background-layer').count(), 0);
+    assert.deepEqual(await composerBackdrop(), nativeBackdrop, 'Clear restores the native composer wrapper');
     assert.match(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Clear restores the native footer fade');
     assert.match(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
     assert.match(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
