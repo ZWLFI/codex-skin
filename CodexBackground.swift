@@ -451,6 +451,7 @@ final class CodexInjector {
             html[data-codex-background="active"] aside.app-shell-left-panel,
             html[data-codex-background="active"] aside.app-shell-left-panel nav,
             html[data-codex-background="active"] [data-app-shell-frame],
+            html[data-codex-background="active"] [data-app-shell-frame] [data-app-shell-surface-backing],
             html[data-codex-background="active"] [data-app-shell-page-surface],
             html[data-codex-background="active"] [data-app-shell-main-surface],
             html[data-codex-background="active"] [data-app-shell-main-titlebar],
@@ -478,9 +479,13 @@ final class CodexInjector {
               background: none !important;
             }
             html[data-codex-background="active"] [data-app-shell-main-content-top-fade],
+            html[data-codex-background="active"] [data-app-shell-main-surface="default"]
+              [aria-hidden="true"][class~="pointer-events-none"][class*="bg-[image:var(--app-shell-content-fade,"],
             html[data-codex-background="active"] [class*="_MainContentTopFade_"],
             html[data-codex-background="active"] [data-app-shell-frame] :is([class^="MainContentTopFade-"], [class*=" MainContentTopFade-"]) { background: none !important; }
             html[data-codex-background="active"] [data-app-shell-main-surface] :is([class*="_WorkspaceContent_"], [class^="WorkspaceContent-"], [class*=" WorkspaceContent-"])::before,
+            html[data-codex-background="active"] [data-app-shell-main-surface="default"]
+              > [class~="electron:before:bg-surface"][class~="electron:before:top-toolbar"]::before,
             html[data-codex-background="active"] [data-app-shell-page-header][data-sticky]::before {
               background: none !important;
             }

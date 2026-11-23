@@ -30,19 +30,20 @@ async function main() {
   const styles = layerOrder + '\n' + [...new Set([...entries(assets)].filter(([name]) => name.endsWith('.css')).map(([, entry]) => readEntry(entry)))].join('\n');
   fs.closeSync(archive);
   const componentClass = name => styles.match(new RegExp(`\\.(?:_${name}_\\w+|${name}-[\\w-]+)`))?.[0].slice(1);
+  const hasSurfaceBacking = styles.includes('[data-app-shell-surface-backing]');
   const workspace = componentClass('WorkspaceContent');
-  const surface = componentClass('MainContentSurface');
+  const surface = componentClass('MainContentSurface') ?? 'bg-surface';
   const fade = componentClass('MainContentTopFade');
-  const layoutClass = styles.match(/\.(?:_Layout_\w+|Layout-[\w-]+)(?=\{--app-shell-titlebar-height)/)?.[0].slice(1);
-  const contentFrame = componentClass('MainContentFrame');
   const topBackground = styles.match(/\.(background-[\w-]+),\.floatingHeader-[^{]+\{background-image:linear-gradient/)?.[1];
   const footerBackground = styles.match(/\.(background-[\w-]+)\{top:calc/)?.[1];
   const footerFade = styles.match(/\.(fade-[\w-]+)\{height:[^}]+--tw-gradient-position:to top/)?.[1];
   const composerFooter = styles.match(/\.(footer-[\w-]+):has\(\[data-thread-composer-backdrop\] \[data-composer-body\]\):before\{background:linear-gradient/)?.[1];
-  assert(topBackground && footerBackground && footerFade, 'Updated gradient components need inspection');
+  assert(footerBackground && footerFade, 'Updated footer gradients need inspection');
   assert(composerFooter, 'Updated composer footer needs inspection');
-  assert(fade, 'Updated app top fade needs inspection');
-  assert(workspace && surface, 'Updated app layout needs inspection');
+  assert(hasSurfaceBacking || (workspace && fade && topBackground), 'Updated app layout needs inspection');
+  const topFadeClasses = hasSurfaceBacking
+    ? 'pointer-events-none absolute top-0 bg-[image:var(--app-shell-content-fade,linear-gradient(to_bottom,currentColor,transparent))] text-surface'
+    : `${fade} ${topBackground}`;
   const binary = process.env.CODEX_SKIN_TEST_BINARY || `${__dirname}/dist/Codex Skin.app/Contents/MacOS/CodexBackground`;
   const script = execFileSync(binary, ['--print-injection-script'], { encoding: 'utf8' });
   const clear = execFileSync(binary, ['--print-injection-script', '--clear'], { encoding: 'utf8' });
@@ -54,16 +55,21 @@ async function main() {
     await page.setContent(`<html data-codex-window-type="electron"><head></head><body><div id="root">
       <div data-app-shell-frame data-app-shell-page-surface="true" data-app-shell-unified-tab-strip="true">
         <aside class="app-shell-left-panel"><nav class="sidebar-navigation">Sidebar</nav></aside>
+        ${hasSurfaceBacking ? '<div data-app-shell-surface-backing aria-hidden="true" class="pointer-events-none absolute inset-y-0 end-0 bg-surface" style="inset-inline-start:140px"></div>' : ''}
         <header data-app-shell-main-titlebar>Title</header>
         <main data-app-shell-main-surface="default" class="${surface}">
-          <div class="${fade} ${topBackground}"></div>
-          <div class="${workspace}"><button id="click-test">Click</button></div>
+          <div id="top-fade" aria-hidden="true" class="${topFadeClasses}"></div>
+          <div id="chat-body" class="${hasSurfaceBacking ? "electron:before:bg-surface electron:before:top-toolbar electron:before:content-['']" : workspace}"><button id="click-test">Click</button></div>
         </main>
       </div></div></body></html>`);
     await page.addStyleTag({ content: styles });
-    await page.addStyleTag({ content: ':root {--color-surface:rgb(255,255,255);--color-surface-secondary:rgb(240,240,240);--color-surface-tertiary:rgb(230,230,230)}' });
-    assert.match(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Reproduce the actual top fade');
-    const pseudoBackground = () => page.locator(`.${workspace}`).evaluate(el => getComputedStyle(el, '::before').backgroundColor);
+    await page.addStyleTag({ content: ':root {--color-surface:rgb(255,255,255);--color-surface-secondary:rgb(240,240,240);--color-surface-tertiary:rgb(230,230,230)} :root[data-theme="dark"] {--color-surface:rgb(25,25,25)}' });
+    const topFade = () => page.locator('#top-fade').evaluate(el => getComputedStyle(el).backgroundImage);
+    const pseudoBackground = () => page.locator('#chat-body').evaluate(el => getComputedStyle(el, '::before').backgroundColor);
+    const backing = page.locator('[data-app-shell-surface-backing]');
+    const backingColor = () => backing.evaluate(el => getComputedStyle(el).backgroundColor);
+    assert.match(await topFade(), /linear-gradient/, 'Reproduce the actual top fade');
+    if (hasSurfaceBacking) assert.equal(await backingColor(), 'rgb(255, 255, 255)', 'Reproduce the white chat panel');
     assert.notEqual(await pseudoBackground(), 'rgba(0, 0, 0, 0)', 'Reproduce the new opaque workspace layer');
     await page.locator('main').evaluate(el => el.insertAdjacentHTML('beforeend', '<div class="thread-scroll-container"><div class="bg-gradient-to-t from-surface" id="bottom-fade"></div><div data-thread-scroll-footer="true"><div id="footer-backdrop" class="pointer-events-none absolute bg-surface"></div><div data-composer-layout="multiline" class="bg-surface">Input</div></div></div>'));
     await page.addStyleTag({ content: '#bottom-fade{background-image:linear-gradient(to top,white,transparent)}#footer-backdrop,[data-composer-layout]{background-color:white}' });
@@ -93,6 +99,8 @@ async function main() {
     }
     for (const theme of ['light', 'dark']) {
       await page.locator('html').evaluate((el, theme) => el.dataset.theme = theme, theme);
+      await page.evaluate(clear);
+      if (hasSurfaceBacking) assert.equal(await backingColor(), theme === 'dark' ? 'rgb(25, 25, 25)' : 'rgb(255, 255, 255)');
       await page.evaluate(script);
       assert.deepEqual(await composerBackdrop(), Array(2).fill({ gradient: 'none', fill: 'rgba(0, 0, 0, 0)' }));
       assert.equal(await page.locator('#bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
@@ -100,7 +108,8 @@ async function main() {
       assert.equal(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), 'none');
       assert.equal(await page.locator('#footer-backdrop').evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
       assert.equal(await page.locator('[data-composer-layout]').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(255, 255, 255)');
-      assert.equal(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), 'none');
+      if (hasSurfaceBacking) assert.equal(await backingColor(), 'rgba(0, 0, 0, 0)', 'The wallpaper must show through the chat panel');
+      assert.equal(await topFade(), 'none');
       assert.equal(await pseudoBackground(), 'rgba(0, 0, 0, 0)');
       for (const selector of ['[data-app-shell-frame]', 'main', 'aside', 'nav', 'header']) {
         assert.equal(await page.locator(selector).evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)', selector);
@@ -124,13 +133,15 @@ async function main() {
     assert.deepEqual(await page.evaluate(probe), { ready: false });
     await page.evaluate(script);
     assert.equal(await page.locator('#codex-background-layer').count(), 1, 'Restore the layer after page remount');
+    await page.locator('html').evaluate(el => el.dataset.theme = 'light');
     await page.evaluate(clear);
     assert.deepEqual(await page.evaluate(probe), { active: false });
     assert.equal(await page.locator('#codex-background-layer').count(), 0);
     assert.deepEqual(await composerBackdrop(), nativeBackdrop, 'Clear restores the native composer wrapper');
     assert.match(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Clear restores the native footer fade');
     assert.match(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
-    assert.match(await page.locator(`.${fade}`).evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
+    assert.match(await topFade(), /linear-gradient/);
+    if (hasSurfaceBacking) assert.equal(await backingColor(), 'rgb(255, 255, 255)', 'Clear restores the chat panel');
     assert.notEqual(await pseudoBackground(), 'rgba(0, 0, 0, 0)', 'Clear restores app styling');
     const frame = page.locator('[data-app-shell-frame]');
     await frame.evaluate(el => {
@@ -150,8 +161,8 @@ async function main() {
     // The reserved space must collapse too, including with no background selected.
     await frame.evaluate(el => el.insertAdjacentHTML('beforeend', '<aside id="threads">Threads</aside><div data-app-shell-main-titlebar>Header</div><div data-app-shell-tab-row>Tabs</div><button id="restore-test">Content action</button><div id="reserved-space"></div>'));
     await page.addStyleTag({ content: '[data-app-shell-frame]{--app-shell-navigation-rail-width:52px;--height-titlebar:44px;--app-shell-titlebar-height:var(--height-titlebar)}#reserved-space{margin-left:var(--app-shell-navigation-rail-width);margin-top:var(--app-shell-titlebar-height)}' });
-    assert(layoutClass && contentFrame);
-    await frame.evaluate((el, { layoutClass, contentFrame, workspace }) => el.insertAdjacentHTML('beforeend', `<div class="${layoutClass}" data-app-shell-application-menu-header style="--sidebar-navigation-header-height:52px;--app-shell-main-content-frame-top-offset:44px"><div id="hidden-header-gap" class="${workspace}"></div><div id="hidden-frame-gap" class="${contentFrame}"></div></div>`), { layoutClass, contentFrame, workspace });
+    await frame.evaluate(el => el.insertAdjacentHTML('beforeend', '<div class="Layout-fixture" style="--app-shell-header-height:52px;--app-shell-main-content-frame-top-offset:44px"><div id="hidden-header-gap"></div><div id="hidden-frame-gap" class="MainContentFrame-fixture"></div></div>'));
+    await page.addStyleTag({ content: '#hidden-header-gap{padding-top:var(--app-shell-header-height)}#hidden-frame-gap{margin-top:var(--app-shell-main-content-frame-top-offset)}' });
     for (const args of [['--hide-rail'], ['--hide-top'], ['--hide-rail', '--hide-top']]) {
       const hidden = execFileSync(binary, ['--print-injection-script', '--clear', ...args], { encoding: 'utf8' });
       await page.evaluate(hidden);
