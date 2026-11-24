@@ -444,6 +444,8 @@ final class CodexInjector {
               isolation: isolate;
               --color-background-elevated-primary: inherit !important;
             }
+            /* The macOS renderer shows this fallback with inline opacity when the window loses focus. */
+            html[data-codex-background="active"] body > .macos-window-backdrop { opacity: 0 !important; }
             #codex-background-layer {
               position: fixed; inset: 0; z-index: -1; pointer-events: none;
               background-color: var(--main-surface-primary, #111318);

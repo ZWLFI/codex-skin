@@ -52,7 +52,8 @@ async function main() {
   try {
     const page = await browser.newPage();
     assert.deepEqual(await page.evaluate(script), { ready: false }, 'An unmounted page is not a successful application');
-    await page.setContent(`<html data-codex-window-type="electron"><head></head><body><div id="root">
+    await page.setContent(`<html data-codex-window-type="electron" data-codex-os="darwin"><head></head><body>
+      <div class="macos-window-backdrop" inert></div><div id="root">
       <div data-app-shell-frame data-app-shell-page-surface="true" data-app-shell-unified-tab-strip="true">
         <aside class="app-shell-left-panel"><nav class="sidebar-navigation">Sidebar</nav></aside>
         ${hasSurfaceBacking ? '<div data-app-shell-surface-backing aria-hidden="true" class="pointer-events-none absolute inset-y-0 end-0 bg-surface" style="inset-inline-start:140px"></div>' : ''}
@@ -64,6 +65,8 @@ async function main() {
       </div></div></body></html>`);
     await page.addStyleTag({ content: styles });
     await page.addStyleTag({ content: ':root {--color-surface:rgb(255,255,255);--color-surface-secondary:rgb(240,240,240);--color-surface-tertiary:rgb(230,230,230)} :root[data-theme="dark"] {--color-surface:rgb(25,25,25)}' });
+    const nativeWindowBackdrop = page.locator('.macos-window-backdrop');
+    assert.equal(await nativeWindowBackdrop.evaluate(el => getComputedStyle(el).opacity), '0');
     const topFade = () => page.locator('#top-fade').evaluate(el => getComputedStyle(el).backgroundImage);
     const pseudoBackground = () => page.locator('#chat-body').evaluate(el => getComputedStyle(el, '::before').backgroundColor);
     const backing = page.locator('[data-app-shell-surface-backing]');
@@ -129,6 +132,15 @@ async function main() {
     await page.evaluate(script);
     assert.equal(await page.locator('#codex-background-layer').count(), 1);
     assert.deepEqual(await page.evaluate(probe), { active: true });
+    // The macOS renderer writes inline opacity when the window changes focus.
+    for (const opacity of ['1', '0', '1']) {
+      const paintedState = await nativeWindowBackdrop.evaluate((el, nextOpacity) => {
+        el.style.opacity = nextOpacity;
+        const image = document.querySelector('#codex-background-layer');
+        return [getComputedStyle(el).opacity, getComputedStyle(image).opacity];
+      }, opacity);
+      assert.deepEqual(paintedState, ['0', '0.42'], 'Keep the configured wallpaper visible through focus changes');
+    }
     await page.locator('#codex-background-layer').evaluate(el => el.remove());
     assert.deepEqual(await page.evaluate(probe), { ready: false });
     await page.evaluate(script);
@@ -137,6 +149,7 @@ async function main() {
     await page.evaluate(clear);
     assert.deepEqual(await page.evaluate(probe), { active: false });
     assert.equal(await page.locator('#codex-background-layer').count(), 0);
+    assert.equal(await nativeWindowBackdrop.evaluate(el => getComputedStyle(el).opacity), '1', 'Clear restores the inactive window backdrop');
     assert.deepEqual(await composerBackdrop(), nativeBackdrop, 'Clear restores the native composer wrapper');
     assert.match(await page.locator('#new-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/, 'Clear restores the native footer fade');
     assert.match(await page.locator('#current-bottom-fade').evaluate(el => getComputedStyle(el).backgroundImage), /linear-gradient/);
